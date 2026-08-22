@@ -5,6 +5,8 @@ description: Use this to write code to call an LLM using LiteLLM and OpenRouter 
 
 # Calling an LLM via Cerebras
 
+> **Not for FinAlly's chat feature.** `planning/PLAN.md` §9 specifies `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` with no Cerebras provider routing for FinAlly's AI chat assistant. Do not use this skill (or the `gpt-oss-120b`/Cerebras example below) to implement that feature — follow PLAN.md §9 instead. This skill remains available for other, unrelated Cerebras-routed LLM calls.
+
 These instructions allow you write code to call an LLM with Cerebras specified as the inference provider.  
 This method uses LiteLLM and OpenRouter.
 

@@ -55,18 +55,18 @@ The user runs a single Docker command (or a provided start script). A browser op
 │  ├── /api/*          REST endpoints             │
 │  ├── /api/stream/*   SSE streaming              │
 │  └── /*              Static file serving         │
-│                      (Next.js export)            │
+│                      (Angular build)             │
 │                                                 │
 │  SQLite database (volume-mounted)               │
 │  Background task: market data polling/sim        │
 └─────────────────────────────────────────────────┘
 ```
 
-- **Frontend**: Next.js with TypeScript, built as a static export (`output: 'export'`), served by FastAPI as static files
+- **Frontend**: Angular with TypeScript, built via the Angular CLI (`ng build`) into static assets, served by FastAPI as static files
 - **Backend**: FastAPI (Python), managed as a `uv` project
 - **Database**: SQLite, single file at `db/finally.db`, volume-mounted for persistence
 - **Real-time data**: Server-Sent Events (SSE) — simpler than WebSockets, one-way server→client push, works everywhere
-- **AI integration**: LiteLLM → OpenRouter (Cerebras for fast inference), with structured outputs for trade execution
+- **AI integration**: LiteLLM → OpenRouter (free-tier model), with structured outputs for trade execution
 - **Market data**: Environment-variable driven — simulator by default, real data via Massive API if key provided
 
 ### Why These Choices
@@ -74,7 +74,7 @@ The user runs a single Docker command (or a provided start script). A browser op
 | Decision | Rationale |
 |---|---|
 | SSE over WebSockets | One-way push is all we need; simpler, no bidirectional complexity, universal browser support |
-| Static Next.js export | Single origin, no CORS issues, one port, one container, simple deployment |
+| Static Angular build | Single origin, no CORS issues, one port, one container, simple deployment |
 | SQLite over Postgres | No auth = no multi-user = no need for a database server; self-contained, zero config |
 | Single Docker container | Students run one command; no docker-compose for production, no service orchestration |
 | uv for Python | Fast, modern Python project management; reproducible lockfile; what students should learn |
@@ -86,7 +86,7 @@ The user runs a single Docker command (or a provided start script). A browser op
 
 ```
 finally/
-├── frontend/                 # Next.js TypeScript project (static export)
+├── frontend/                 # Angular TypeScript project (static build)
 ├── backend/                  # FastAPI uv project (Python)
 │   └── db/                   # Schema definitions, seed data, migration logic
 ├── planning/                 # Project-wide documentation for agents
@@ -108,7 +108,7 @@ finally/
 
 ### Key Boundaries
 
-- **`frontend/`** is a self-contained Next.js project. It knows nothing about Python. It talks to the backend via `/api/*` endpoints and `/api/stream/*` SSE endpoints. Internal structure is up to the Frontend Engineer agent.
+- **`frontend/`** is a self-contained Angular project. It knows nothing about Python. It talks to the backend via `/api/*` endpoints and `/api/stream/*` SSE endpoints. Internal structure is up to the Frontend Engineer agent.
 - **`backend/`** is a self-contained uv project with its own `pyproject.toml`. It owns all server logic including database initialization, schema, seed data, API routes, SSE streaming, market data, and LLM integration. Internal structure is up to the Backend/Market Data agents.
 - **`backend/db/`** contains schema SQL definitions and seed logic. The backend lazily initializes the database on first request — creating tables and seeding default data if the SQLite file doesn't exist or is empty.
 - **`db/`** at the top level is the runtime volume mount point. The SQLite file (`db/finally.db`) is created here by the backend and persists across container restarts via Docker volume.
@@ -156,13 +156,14 @@ Both the simulator and the Massive client implement the same abstract interface.
 - Starts from realistic seed prices (e.g., AAPL ~$190, GOOGL ~$175, etc.)
 - Runs as an in-process background task — no external dependencies
 
-### Massive API (Optional)
+### Massive API (Optional, not used in this project)
 
 - REST API polling (not WebSocket) — simpler, works on all tiers
 - Polls for the union of all watched tickers on a configurable interval
 - Free tier (5 calls/min): poll every 15 seconds
 - Paid tiers: poll every 2-15 seconds depending on tier
 - Parses REST response into the same format as the simulator
+- This client is already implemented (see `planning/MARKET_DATA_SUMMARY.md`) and kept as a working alternative behind the `MASSIVE_API_KEY` switch, but this project intentionally runs on the simulator only — `MASSIVE_API_KEY` stays unset. No further work should target Massive-specific behavior (e.g. adapting the UI to its slower polling cadence).
 
 ### Shared Price Cache
 
@@ -178,6 +179,7 @@ Both the simulator and the Massive client implement the same abstract interface.
 - Server pushes price updates for all tickers known to the system at a regular cadence (~500ms) — in the single-user model this is equivalent to the user's watchlist
 - Each SSE event contains ticker, price, previous price, timestamp, and change direction
 - Client handles reconnection automatically (EventSource has built-in retry)
+- Watchlist changes (`POST`/`DELETE /api/watchlist/*`, or an LLM-initiated change) take effect on the existing, already-open SSE connection immediately — the data source's `add_ticker`/`remove_ticker` updates the shared `PriceCache`, which the stream reads from on every tick. The frontend does not need to reconnect when the watchlist changes.
 
 ---
 
@@ -190,6 +192,8 @@ The backend checks for the SQLite database on startup (or first request). If the
 - No separate migration step
 - No manual database setup
 - Fresh Docker volumes start with a clean, seeded database automatically
+
+Given the single-user scope, a single SQLite connection with straightforward sequential writes is sufficient — no WAL mode, connection pool, or write-queue is required. This is a deliberate simplification, not an oversight.
 
 ### Schema
 
@@ -215,6 +219,8 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 - `avg_cost` REAL
 - `updated_at` TEXT (ISO timestamp)
 - UNIQUE constraint on `(user_id, ticker)`
+- **Buys**: `avg_cost` is recalculated as the weighted average of the existing position and the new fill (`(old_qty * old_avg_cost + fill_qty * fill_price) / (old_qty + fill_qty)`).
+- **Sells**: `avg_cost` is unchanged (only realizes P&L against the existing basis); `quantity` decreases. When a sell brings `quantity` to exactly 0, the position row is deleted rather than kept at zero.
 
 **trades** — Trade history (append-only log)
 - `id` TEXT PRIMARY KEY (UUID)
@@ -230,6 +236,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 - `user_id` TEXT (default: `"default"`)
 - `total_value` REAL
 - `recorded_at` TEXT (ISO timestamp)
+- No retention/pruning logic is needed — this is a short-lived demo app, not a long-running service, so unbounded row growth is not a concern in scope.
 
 **chat_messages** — Conversation history with LLM
 - `id` TEXT PRIMARY KEY (UUID)
@@ -281,7 +288,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 
 ## 9. LLM Integration
 
-When writing code to make calls to LLMs, use cerebras-inference skill to use LiteLLM via OpenRouter to the `openrouter/openai/gpt-oss-120b` model with Cerebras as the inference provider. Structured Outputs should be used to interpret the results.
+When writing code to make calls to LLMs, use LiteLLM via OpenRouter to the `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` model — a free-tier model, chosen to keep the project runnable without incurring API costs. Structured Outputs should be used to interpret the results.
 
 There is an OPENROUTER_API_KEY in the .env file in the project root.
 
@@ -292,11 +299,11 @@ When the user sends a chat message, the backend:
 1. Loads the user's current portfolio context (cash, positions with P&L, watchlist with live prices, total portfolio value)
 2. Loads recent conversation history from the `chat_messages` table
 3. Constructs a prompt with a system message, portfolio context, conversation history, and the user's new message
-4. Calls the LLM via LiteLLM → OpenRouter, requesting structured output, using the cerebras-inference skill
+4. Calls the LLM via LiteLLM → OpenRouter, requesting structured output
 5. Parses the complete structured JSON response
 6. Auto-executes any trades or watchlist changes specified in the response
 7. Stores the message and executed actions in `chat_messages`
-8. Returns the complete JSON response to the frontend (no token-by-token streaming — Cerebras inference is fast enough that a loading indicator is sufficient)
+8. Returns the complete JSON response to the frontend (no token-by-token streaming — a loading indicator is shown while awaiting the response)
 
 ### Structured Output Schema
 
@@ -315,8 +322,15 @@ The LLM is instructed to respond with JSON matching this schema:
 ```
 
 - `message` (required): The conversational text shown to the user
-- `trades` (optional): Array of trades to auto-execute. Each trade goes through the same validation as manual trades (sufficient cash for buys, sufficient shares for sells)
+- `trades` (optional): Array of trades to auto-execute. Each trade goes through the same validation as manual trades (sufficient cash for buys, sufficient shares for sells). Concretely: there is exactly one internal `execute_trade()` function, and both `POST /api/portfolio/trade` and the LLM chat action-execution step call it — the chat handler must not reimplement trade validation
 - `watchlist_changes` (optional): Array of watchlist modifications
+
+### Structured Output Fallback
+
+Free-tier OpenRouter models can have inconsistent support for JSON-schema-constrained structured outputs / tool calling. If a structured-output call fails (API error, malformed/non-conforming JSON, or the model ignoring the schema):
+1. Retry once with a prompt-based approach — include the schema and an example in the prompt text itself, and ask for JSON-only output
+2. Attempt to parse/repair the response (e.g., extract the first valid JSON object from the text)
+3. If both attempts fail, return a plain-text error message to the user (no trades/watchlist changes executed) rather than crashing the request
 
 ### Auto-Execution
 
@@ -364,7 +378,7 @@ The frontend is a single-page application with a dense, terminal-inspired layout
 ### Technical Notes
 
 - Use `EventSource` for SSE connection to `/api/stream/prices`
-- Canvas-based charting library preferred (Lightweight Charts or Recharts) for performance
+- **Charting library: ECharts (via `ngx-echarts`)** for all three visualizations — sparklines/main price chart, the P&L line chart, and the portfolio heatmap (`treemap` series). One dependency instead of separate line-chart and treemap libraries, canvas-rendered for performance
 - Price flash effect: on receiving a new price, briefly apply a CSS class with background color transition, then remove it
 - All API calls go to the same origin (`/api/*`) — no CORS configuration needed
 - Tailwind CSS for styling with a custom dark theme
@@ -378,7 +392,7 @@ The frontend is a single-page application with a dense, terminal-inspired layout
 ```
 Stage 1: Node 20 slim
   - Copy frontend/
-  - npm install && npm run build (produces static export)
+  - npm install && npm run build (Angular CLI production build, produces static assets in dist/)
 
 Stage 2: Python 3.12 slim
   - Install uv
@@ -390,6 +404,14 @@ Stage 2: Python 3.12 slim
 ```
 
 FastAPI serves the static frontend files and all API routes on port 8000.
+
+### Local Development
+
+Rebuilding the Docker image on every code change is too slow for iteration. During development, run frontend and backend as two separate processes instead:
+
+- **Backend**: `uv run uvicorn app.main:app --reload --port 8000` from `backend/` — serves `/api/*` and `/api/stream/*` with hot reload.
+- **Frontend**: `ng serve` from `frontend/` — serves the Angular dev server (default port 4200) with a proxy config (`proxy.conf.json`) forwarding `/api/*` requests to `http://localhost:8000`, so the frontend code always calls the same-origin-relative `/api/*` paths in both dev and production.
+- The production Docker build (this section) remains the target for the final `ng build` + FastAPI static-file-serving setup; local dev never needs to go through Docker.
 
 ### Docker Volume
 
@@ -433,7 +455,7 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - LLM: structured output parsing handles all valid schemas, graceful handling of malformed responses, trade validation within chat flow
 - API routes: correct status codes, response shapes, error handling
 
-**Frontend (React Testing Library or similar)**:
+**Frontend (Jasmine/Karma via Angular CLI, or Angular Testing Library)**:
 - Component rendering with mock data
 - Price flash animation triggers correctly on price changes
 - Watchlist CRUD operations
