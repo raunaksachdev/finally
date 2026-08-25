@@ -78,7 +78,7 @@ Full rationale for these choices is in [`planning/PLAN.md`](planning/PLAN.md) §
 
 ## What's built so far: market data
 
-A self-contained market data subsystem lives in `backend/app/market/` — a `PriceCache`, a GBM-based simulator with correlated, per-sector price moves, a Massive/Polygon.io REST client behind the same interface, and an SSE stream factory. It's fully tested (73 tests, 91% coverage overall — `stream.py` is the weak spot at 33%, everything else is 94-100%) and has a standalone terminal demo:
+A self-contained market data subsystem lives in `backend/app/market/` — a `PriceCache`, a GBM-based simulator with correlated, per-sector price moves, a Massive/Polygon.io REST client behind the same interface, and an SSE stream factory. It's fully tested (79 tests, 99% coverage overall — every module is 94-100%, `stream.py` included) and has a standalone terminal demo:
 
 ```bash
 cd backend
